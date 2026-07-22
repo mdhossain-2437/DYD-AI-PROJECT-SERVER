@@ -1,0 +1,93 @@
+# Local / single-host deployment of the full stack. For real scale you would
+# run the `api` service as N replicas behind the load balancer (Caddy here, or a
+# cloud LB), with Postgres and Redis as managed services — but this compose file
+# stands up an honest, working copy of the whole system on one machine.
+#
+#   docker compose up --build
+#
+# Then the API is reachable via Caddy at https://localhost (self-signed locally).
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dyd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dyd}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Migrations run automatically on first init of an empty data volume.
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dyd} -d ${POSTGRES_DB:-dyd}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published to the host: only the api service reaches it over the
+    # internal network. One less port exposed.
+    expose:
+      - "5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Persistence + a memory ceiling so a flood can't OOM the host.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    expose:
+      - "6379"
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      HTTP_PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-dyd}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dyd}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set your frontend origin}
+      # Reverse proxy is the only trusted hop in this topology.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-0.0.0.0/0}
+      PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:?generate a base64 32-byte key}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY:?generate a base64 32-byte key}
+      VERIFICATION_HMAC_KEY: ${VERIFICATION_HMAC_KEY:?generate a base64 32-byte key}
+      TURNSTILE_ENABLED: ${TURNSTILE_ENABLED:-true}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      CURRENT_BATCH: ${CURRENT_BATCH:-১ম ব্যাচ}
+    expose:
+      - "8080"
+    # A second replica is one line — uncomment to prove cross-instance rate
+    # limiting via Redis actually holds. Caddy load-balances across them.
+    # deploy:
+    #   replicas: 2
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+
+volumes:
+  pgdata:
+  redisdata:
+  caddydata:
+  caddyconfig:

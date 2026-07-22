@@ -1,0 +1,52 @@
+# Caddy reverse proxy for the DYD API.
+#
+# Caddy is the TLS-terminating edge in front of the Go API. It:
+#   - obtains and renews TLS certificates automatically (Let's Encrypt in prod),
+#   - load-balances across every `api` replica with health-aware routing,
+#   - sets the forwarded headers the API trusts for the real client IP,
+#   - adds a coarse connection/timeout backstop beneath the app's rate limiter.
+#
+# Replace `:443`/`localhost` with your real domain (e.g. api.dydaiproject.com)
+# to switch from the local self-signed cert to a publicly-trusted one.
+
+{
+	# Local dev uses Caddy's internal CA (self-signed). In production, set an
+	# email and Caddy provisions real certs automatically:
+	# email admin@dydaiproject.com
+	servers {
+		# Trust our own presence; upstream real-IP handling is done by Cloudflare
+		# in front of Caddy in the recommended topology (see README).
+		trusted_proxies static 0.0.0.0/0
+	}
+}
+
+# For a real domain, replace this site address with the domain name and Caddy
+# will fetch a trusted certificate over ACME with no further config.
+localhost {
+
+	# Health of upstreams is checked actively; unhealthy replicas are removed
+	# from rotation so a single sick instance never serves errors.
+	reverse_proxy api:8080 {
+		lb_policy round_robin
+		health_uri /healthz
+		health_interval 10s
+		health_timeout 3s
+
+		# Hand the API the true client IP + protocol so its rate limiter keys on
+		# the real address, not Caddy's.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Defense-in-depth request timeouts (the app sets its own too).
+	request_body {
+		max_size 8MB
+	}
+
+	encode gzip zstd
+
+	log {
+		output stdout
+		format json
+	}
+}
