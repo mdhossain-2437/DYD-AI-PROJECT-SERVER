@@ -53,8 +53,11 @@ type Config struct {
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {
 	c := &Config{
-		Env:                getEnv("APP_ENV", "development"),
-		HTTPPort:           getEnv("HTTP_PORT", "8080"),
+		Env: getEnv("APP_ENV", "development"),
+		// PaaS platforms (Vercel, Railway, Render, Fly, Heroku) inject the port to
+		// bind as $PORT and route traffic there; honour it first so the deploy's
+		// health check can reach us, then our own HTTP_PORT, then a local default.
+		HTTPPort:           getEnv("PORT", getEnv("HTTP_PORT", "8080")),
 		BodyLimitBytes:     getInt("HTTP_BODY_LIMIT_BYTES", 8<<20),
 		ReadTimeout:        getSeconds("READ_TIMEOUT_SECONDS", 15),
 		WriteTimeout:       getSeconds("WRITE_TIMEOUT_SECONDS", 20),
