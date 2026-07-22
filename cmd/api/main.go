@@ -51,6 +51,18 @@ func main() {
 	}
 	defer db.Close()
 
+	// ---- schema migrations (idempotent; on by default) ---------------------
+	// Applies the embedded SQL so a fresh managed database is usable without a
+	// manual psql step. Disable with AUTO_MIGRATE=false to manage schema yourself.
+	if cfg.AutoMigrate {
+		migCtx, migCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		err := db.Migrate(migCtx, log)
+		migCancel()
+		if err != nil {
+			log.Fatal().Err(err).Msg("schema migration failed")
+		}
+	}
+
 	// ---- redis (optional; nil => in-memory rate limiting) ------------------
 	redisStore, err := redisstore.Connect(cfg.RedisURL, log)
 	if err != nil {

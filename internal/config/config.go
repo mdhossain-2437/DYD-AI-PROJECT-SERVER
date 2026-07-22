@@ -48,6 +48,12 @@ type Config struct {
 	RateLookupPerMin  int
 
 	CurrentBatch string
+
+	// AutoMigrate applies the embedded, idempotent schema migrations on startup.
+	// On by default so a fresh managed database (e.g. Render/Railway free tier,
+	// where a shell/psql may be unavailable) becomes usable without a manual
+	// step. Set AUTO_MIGRATE=false to manage schema out-of-band instead.
+	AutoMigrate bool
 }
 
 // Load reads configuration from the environment and validates it.
@@ -77,6 +83,7 @@ func Load() (*Config, error) {
 		RateSubmitPerMin:   getInt("RATE_LIMIT_SUBMIT_PER_MIN", 5),
 		RateLookupPerMin:   getInt("RATE_LIMIT_LOOKUP_PER_MIN", 10),
 		CurrentBatch:       getEnv("CURRENT_BATCH", "১ম ব্যাচ"),
+		AutoMigrate:        getBool("AUTO_MIGRATE", true),
 	}
 	c.Prod = c.Env == "production"
 
