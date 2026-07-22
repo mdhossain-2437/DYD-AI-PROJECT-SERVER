@@ -82,6 +82,10 @@ func New(d Deps) *fiber.App {
 
 	v1.Get("/geo", d.Handler.Geo)
 
+	// Public, read-only authenticity check for a printed document's QR/code.
+	// Non-PII, so it rides the general limiter only (no per-endpoint tightening).
+	v1.Get("/verify", d.Handler.VerifyDocument)
+
 	submitLimit := middleware.RateLimiter(middleware.RateLimiterConfig{
 		Max: d.Config.RateSubmitPerMin, Expiration: minute, Storage: d.LimiterStore, Name: "submit",
 	})

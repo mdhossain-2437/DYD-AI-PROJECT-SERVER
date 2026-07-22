@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog"
@@ -169,6 +170,35 @@ func (h *Handler) Subscribe(c *fiber.Ctx) error {
 // cascading select is driven by the SAME source the server validates against.
 func (h *Handler) Geo(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"divisions": data.Divisions})
+}
+
+// ---- GET /v1/verify --------------------------------------------------------
+
+// VerifyDocument confirms a verification code corresponds to a genuine issued
+// document and reports its lifecycle status — WITHOUT returning any PII. It is
+// what a QR scan on a printed admit card resolves to, so it must answer cleanly
+// for the public: a valid code returns the status, an unknown code returns a
+// 200 with valid:false (not an error), and only malformed input / server faults
+// use non-2xx. No Turnstile: this is a read-only, non-PII authenticity check.
+func (h *Handler) VerifyDocument(c *fiber.Ctx) error {
+	code := strings.TrimSpace(c.Query("code"))
+	if code == "" {
+		return badRequest(c, "missing verification code")
+	}
+	// Bound the input so a pathological query can't reach the database layer.
+	if len(code) > 64 {
+		return c.JSON(fiber.Map{"ok": true, "valid": false})
+	}
+
+	view, err := h.repo.FindByVerifyCode(c.Context(), code)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return c.JSON(fiber.Map{"ok": true, "valid": false})
+		}
+		h.log.Error().Err(err).Msg("verify lookup failed")
+		return internalError(c)
+	}
+	return c.JSON(fiber.Map{"ok": true, "valid": true, "result": view})
 }
 
 // ---- shared error helpers --------------------------------------------------

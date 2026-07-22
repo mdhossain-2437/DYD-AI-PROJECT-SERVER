@@ -139,3 +139,28 @@ func (s *Signer) Verify(msg, sig string) bool {
 	expected := s.Sign(msg)
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(sig)) == 1
 }
+
+// DocCode returns a stable, human-readable verification code for a document of
+// the given kind (prefix, e.g. "AC" for admit card) and immutable id. It HMACs
+// "kind|id" and renders the first 40 bits as 8 uppercase base32 characters, so
+// the code is:
+//   - stable   — same (kind, id) always yields the same code, for the life of
+//     the record (the id never changes), so a printed QR never goes stale;
+//   - unforgeable — deriving it requires VERIFICATION_HMAC_KEY, so codes cannot
+//     be guessed or fabricated from a known id;
+//   - non-PII  — seeded only on the row id, never on a name/phone/roll number.
+//
+// Format: "DYD-<PREFIX>-XXXXXXXX" (e.g. "DYD-AC-J7K2P9QM").
+func (s *Signer) DocCode(prefix, id string) string {
+	sum := hmac.New(sha256.New, s.key)
+	sum.Write([]byte(prefix + "|" + id))
+	// Crockford-style base32 alphabet, minus I/L/O/U to avoid look-alike/ambiguous
+	// characters when a person reads a code off a printed page.
+	const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	digest := sum.Sum(nil)
+	var b [8]byte
+	for i := 0; i < 8; i++ {
+		b[i] = alphabet[digest[i]&0x1f]
+	}
+	return "DYD-" + prefix + "-" + string(b[:])
+}

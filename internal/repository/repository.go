@@ -30,12 +30,18 @@ type Repository struct {
 	db     *database.DB
 	cipher *crypto.Cipher
 	bidx   *crypto.BlindIndex
+	signer *crypto.Signer
 	batch  string
 }
 
-func New(db *database.DB, cipher *crypto.Cipher, bidx *crypto.BlindIndex, currentBatch string) *Repository {
-	return &Repository{db: db, cipher: cipher, bidx: bidx, batch: currentBatch}
+func New(db *database.DB, cipher *crypto.Cipher, bidx *crypto.BlindIndex, signer *crypto.Signer, currentBatch string) *Repository {
+	return &Repository{db: db, cipher: cipher, bidx: bidx, signer: signer, batch: currentBatch}
 }
+
+// docCodePrefix is the document-kind prefix baked into every admit-card
+// verification code (DYD-AC-XXXXXXXX) and into the HMAC seed. Keeping it a const
+// here keeps create/lookup/verify in perfect agreement.
+const docCodePrefix = "AC"
 
 // ---- applications -----------------------------------------------------------
 
@@ -103,6 +109,17 @@ func (r *Repository) CreateApplication(ctx context.Context, in models.Applicatio
 		}
 		return "", fmt.Errorf("insert application: %w", err)
 	}
+
+	// Seed the stable verification code on the freshly-minted (immutable) id and
+	// persist it, so GET /v1/verify is a single indexed lookup. Best-effort: a
+	// failure here must not lose the application (the row already exists), and the
+	// code is deterministic so it can be backfilled on the next admit-card read.
+	code := r.signer.DocCode(docCodePrefix, id)
+	if _, uerr := r.db.Primary.Exec(ctx,
+		`UPDATE applications SET verify_code = $1 WHERE id = $2`, code, id); uerr != nil {
+		// Log-worthy but non-fatal; FindAdmitCard backfills a missing code.
+		return id, nil
+	}
 	return id, nil
 }
 
@@ -114,7 +131,7 @@ func (r *Repository) FindAdmitCard(ctx context.Context, in models.AdmitCardLooku
 	const q = `
 		SELECT id, name_enc, phone_enc, email_enc, address_enc, education_enc,
 		       photo_enc, division, district, batch, roll_no,
-		       admission_confirmed, status, created_at
+		       admission_confirmed, status, created_at, verify_code
 		FROM applications
 		WHERE phone_dob_bidx = $1
 		LIMIT 1`
@@ -127,15 +144,26 @@ func (r *Repository) FindAdmitCard(ctx context.Context, in models.AdmitCardLooku
 		rollNo                                            *string
 		confirmed                                         bool
 		createdAt                                         time.Time
+		verifyCode                                        string
 	)
 	err := row.Scan(&id, &nameEnc, &phoneEnc, &emailEnc, &addrEnc, &eduEnc,
 		&photoEnc, &division, &district, &batch, &rollNo,
-		&confirmed, &status, &createdAt)
+		&confirmed, &status, &createdAt, &verifyCode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lookup admit card: %w", err)
+	}
+
+	// Backfill the verification code for rows created before verify_code existed
+	// (or whose create-time UPDATE didn't land). The code is deterministic from
+	// the immutable id, so this is idempotent. Written to the primary.
+	if verifyCode == "" {
+		verifyCode = r.signer.DocCode(docCodePrefix, id)
+		_, _ = r.db.Primary.Exec(ctx,
+			`UPDATE applications SET verify_code = $1 WHERE id = $2 AND verify_code = ''`,
+			verifyCode, id)
 	}
 
 	dec := func(enc string) string {
@@ -160,6 +188,53 @@ func (r *Repository) FindAdmitCard(ctx context.Context, in models.AdmitCardLooku
 		AdmissionConfirmed: confirmed,
 		Status:             status,
 		ApplicationDate:    createdAt.Format("2006-01-02"),
+		VerifyCode:         verifyCode,
+	}
+	if rollNo != nil {
+		view.RollNo = *rollNo
+	}
+	return view, nil
+}
+
+// FindByVerifyCode resolves a verification code to a NON-PII status view. It is
+// the backing query for GET /v1/verify: a scanned QR (or a manually-typed code)
+// confirms the document is genuine and reports its lifecycle status without ever
+// returning who the applicant is. Reads go to the replica. An unknown or empty
+// code returns ErrNotFound (handlers turn that into a clean "invalid" result).
+func (r *Repository) FindByVerifyCode(ctx context.Context, code string) (*models.VerifyView, error) {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	if code == "" {
+		return nil, ErrNotFound
+	}
+
+	const q = `
+		SELECT batch, roll_no, admission_confirmed, status, created_at
+		FROM applications
+		WHERE verify_code = $1
+		LIMIT 1`
+
+	var (
+		batch, status string
+		rollNo        *string
+		confirmed     bool
+		createdAt     time.Time
+	)
+	err := r.db.Replica.QueryRow(ctx, q, code).
+		Scan(&batch, &rollNo, &confirmed, &status, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("verify code lookup: %w", err)
+	}
+
+	view := &models.VerifyView{
+		Valid:              true,
+		DocType:            "admit-card",
+		Status:             status,
+		Batch:              batch,
+		AdmissionConfirmed: confirmed,
+		IssuedDate:         createdAt.Format("2006-01-02"),
 	}
 	if rollNo != nil {
 		view.RollNo = *rollNo

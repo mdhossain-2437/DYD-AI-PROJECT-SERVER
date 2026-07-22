@@ -80,9 +80,10 @@ func main() {
 		log.Fatal().Err(err).Msg("cipher init failed")
 	}
 	bidx := crypto.NewBlindIndex(cfg.BlindIndexKey)
+	signer := crypto.NewSigner(cfg.VerificationHMACKey)
 
 	// ---- application wiring -------------------------------------------------
-	repo := repository.New(db, cipher, bidx, cfg.CurrentBatch)
+	repo := repository.New(db, cipher, bidx, signer, cfg.CurrentBatch)
 	validator := validate.New()
 	ts := turnstile.New(cfg.TurnstileSecretKey, cfg.TurnstileEnabled)
 	h := handlers.New(repo, validator, ts, log)

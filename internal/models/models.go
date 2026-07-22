@@ -89,6 +89,24 @@ type AdmitCardView struct {
 	AdmissionConfirmed bool   `json:"admissionConfirmed"`
 	Status             string `json:"status"`
 	ApplicationDate    string `json:"applicationDate,omitempty"`
+	// VerifyCode is the stable, non-PII code a QR scan resolves to. The client
+	// renders it into the admit card's QR so /verify can confirm authenticity.
+	VerifyCode string `json:"verifyCode,omitempty"`
+}
+
+// VerifyView is the deliberately non-PII result of GET /v1/verify. It confirms a
+// code corresponds to a genuine issued document and reports its lifecycle status
+// WITHOUT revealing who the applicant is — no name, phone, email, or address.
+// A third party scanning a QR learns "this admit card is real and its status is
+// X", nothing more.
+type VerifyView struct {
+	Valid              bool   `json:"valid"`
+	DocType            string `json:"docType,omitempty"` // e.g. "admit-card"
+	Status             string `json:"status,omitempty"`  // submitted|reviewed|selected|rejected
+	Batch              string `json:"batch,omitempty"`
+	RollNo             string `json:"rollNo,omitempty"`
+	AdmissionConfirmed bool   `json:"admissionConfirmed,omitempty"`
+	IssuedDate         string `json:"issuedDate,omitempty"`
 }
 
 // ---- Contact & newsletter ---------------------------------------------------
