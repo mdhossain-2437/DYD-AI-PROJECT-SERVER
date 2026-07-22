@@ -58,6 +58,16 @@ func RequestID() fiber.Handler {
 	return requestid.New()
 }
 
+// requestIDOf pulls the request id the requestid middleware stored in Locals.
+// Fiber v2 has no requestid.FromContext helper — the value lives under the
+// middleware's configured context key (default "requestid").
+func requestIDOf(c *fiber.Ctx) string {
+	if v, ok := c.Locals(requestid.ConfigDefault.ContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // Recover turns any panic into a 500 instead of taking the process down — a
 // crashing handler must never become downtime.
 func Recover(log zerolog.Logger) fiber.Handler {
@@ -65,7 +75,7 @@ func Recover(log zerolog.Logger) fiber.Handler {
 		EnableStackTrace: true,
 		StackTraceHandler: func(c *fiber.Ctx, e any) {
 			log.Error().
-				Str("request_id", requestid.FromContext(c)).
+				Str("request_id", requestIDOf(c)).
 				Str("path", c.Path()).
 				Interface("panic", e).
 				Msg("recovered from panic")
@@ -87,7 +97,7 @@ func AccessLog(log zerolog.Logger) fiber.Handler {
 			ev = log.Warn()
 		}
 		ev.
-			Str("request_id", requestid.FromContext(c)).
+			Str("request_id", requestIDOf(c)).
 			Str("method", c.Method()).
 			Str("path", c.Path()).
 			Int("status", c.Response().StatusCode()).
