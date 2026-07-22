@@ -1,0 +1,63 @@
+# Render Blueprint — provisions the DYD API server AND its PostgreSQL database
+# together, wired to each other. This is the right home for this service: it is
+# a long-lived Fiber server (connection pools, graceful shutdown, health-aware
+# load balancing per deploy/Caddyfile) — NOT a serverless function. Vercel's Go
+# runtime is for per-request functions and cannot keep this process alive, which
+# is why it returned FUNCTION_INVOCATION_FAILED.
+#
+# How to use:
+#   1. Render Dashboard -> New -> Blueprint -> connect this repo.
+#   2. Render reads this file, creates the database + web service.
+#   3. Set the three secret keys (marked sync:false) in the dashboard — do NOT
+#      commit them. Generate each with:  openssl rand -base64 32
+#   4. After first deploy, apply the SQL in migrations/ to the database once
+#      (Render Dashboard -> the dyd-db -> "Connect" -> psql, then run each file).
+#
+# Free tier note: free Postgres expires after ~30 days and free web services
+# spin down when idle. For the real government launch, move both to a paid plan.
+
+databases:
+  - name: dyd-db
+    databaseName: dyd
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: dyd-ai-project-server
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # Render load-balances traffic to this path and restarts the container if it
+    # stops answering — matches the /healthz liveness probe the API exposes.
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      # Render injects the port to bind as $PORT; the server already prefers it.
+      # DATABASE_URL is wired straight from the database above — no copy-paste.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dyd-db
+          property: connectionString
+      # Exact origin of the deployed client (no trailing slash — browsers send
+      # the Origin header without one and the API matches exactly).
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://dyd-ai-project-client.vercel.app
+      # Turnstile off until a real secret is added, so the server boots (prod
+      # config rejects TURNSTILE_ENABLED=true with an empty secret). Flip this to
+      # true and set TURNSTILE_SECRET_KEY once you have Cloudflare keys.
+      - key: TURNSTILE_ENABLED
+        value: "false"
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      # Security keys — set in the dashboard, NEVER commit. Each must be a
+      # base64-encoded 32-byte key: openssl rand -base64 32
+      # WARNING: once real applicant data exists, PII_ENCRYPTION_KEY and
+      # BLIND_INDEX_KEY must never change, or stored rows become unreadable.
+      - key: PII_ENCRYPTION_KEY
+        sync: false
+      - key: BLIND_INDEX_KEY
+        sync: false
+      - key: VERIFICATION_HMAC_KEY
+        sync: false
